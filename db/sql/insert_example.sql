@@ -28,8 +28,8 @@ INSERT OR REPLACE INTO "prog" (id,kind,interval_sec,max_rows,clear) VALUES
 (3, 'fts', 60, 720, 1),
 (4, 'fts', 60, 720, 1);
 
-INSERT OR REPLACE INTO "channel" (id,description,prog_id,sensor_remote_channel_id,cycle_duration_sec,cycle_duration_nsec,save,enable,load) VALUES
-(1, 'канал1', 1,1, 1,0, 1,1,1),
-(2, 'канал2', 1,2, 1,0, 1,1,1),
-(3, 'канал3', 1,3, 1,0, 1,1,1),
-(4, 'канал4', 1,4, 1,0, 1,1,1);
+INSERT OR REPLACE INTO "channel" (id,description,prog_id,sensor_remote_channel_id,save,enable,load) VALUES
+(1, 'канал1', 1,1, 1,1,1),
+(2, 'канал2', 1,2, 1,1,1),
+(3, 'канал3', 1,3, 1,1,1),
+(4, 'канал4', 1,4, 1,1,1);

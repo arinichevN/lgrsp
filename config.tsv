@@ -1,2 +1,2 @@
-peer_id	db_prog_path
-lgr_1	db/data.db
+peer_id	db_prog_path	db_log_path	socket_timeout	cd_sec	cd_nsec
+lgr_1	db/data.db	host=localhost port=5432 user=postgres password=654321 dbname=control connect_timeout=3	1	3	0

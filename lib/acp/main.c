@@ -863,6 +863,14 @@ void acp_responseSendStr ( const char *s, int is_not_last, ACPResponse *response
     }
 }
 
+//int acp_responseReadDF(void *data, ACPRequest *request, Peer *peer) {
+//ACP_RESPONSE_CREATE
+//if ( !acp_responseRead ( &response, peer ) ) return 0;
+//if ( !acp_responseCheck ( &response, request ) ) return 0;
+//acp_dataTo ## T(response.data, list);
+//return 1;
+//}
+
 FUN_ACP_RESPONSE_READ ( I1List )
 FUN_ACP_RESPONSE_READ ( I2List )
 FUN_ACP_RESPONSE_READ ( I1F1List )
@@ -1021,6 +1029,70 @@ int acp_getFTS ( FTS *output, Peer *peer, int remote_channel_id ) {
     *output = tl.item[0];
 
     return 1;
+}
+
+int acp_getFTS_poll ( FTS *output, Peer *peer, int remote_channel_id ) {
+
+    struct timespec now = getCurrentTime();
+    peer->active = 0;
+    peer->time1 = now;
+
+    int di[1];
+    di[0] = remote_channel_id;
+    I1List data = {di, 1, 1};
+    ACPRequest request;
+    
+    struct pollfd fds[1];
+    fds[0].fd = *peer->fd;
+    fds[0].events = POLLOUT;
+    int pr = poll ( fds, 1, 0 );
+    if ( pr == -1 ) {
+        perrord ( "poll" );
+        return ACP_RETURN_FAILURE;
+    }
+    if(pr!=1){
+        return ACP_RETURN_WAIT_SEND;
+    }
+    if ( !acp_requestSendI1List ( ACP_CMD_GET_FTS, &data, &request, peer ) ) {
+        printde ( "send failed where remote_channel_id=%d\n", remote_channel_id );
+        return ACP_RETURN_FAILURE;
+    }
+
+    //waiting for response...
+    FTS td[1];
+    FTSList tl = {td, 0, 1};
+
+    memset ( &td, 0, sizeof tl );
+    tl.length = 0;
+    fds[0].events = POLLIN;
+    pr = poll ( fds, 1, 0 );
+    if ( pr == -1 ) {
+        perrord ( "poll" );
+        return ACP_RETURN_FAILURE;
+    }
+    if(pr!=1){
+        return ACP_RETURN_WAIT_RECIEVE;
+    }
+    if ( !acp_responseReadFTSList ( &tl, &request, peer ) ) {
+        printde ( "read failed where remote_channel_id=%d\n", remote_channel_id );
+        return ACP_RETURN_FAILURE;
+    }
+    peer->active = 1;
+    if ( tl.length != 1 ) {
+        printde ( "response: number of items = %d but 1 expected\n", tl.length );
+        return ACP_RETURN_FAILURE;
+    }
+    if ( tl.item[0].id != remote_channel_id ) {
+        printde ( "response: peer returned id=%d but requested one was %d\n", tl.item[0].id, remote_channel_id );
+        return ACP_RETURN_FAILURE;
+    }
+    if ( tl.item[0].state != 1 ) {
+        printde ( "response: FTS state is bad where remote_channel_id=%d\n", remote_channel_id );
+        return ACP_RETURN_FAILURE;
+    }
+    *output = tl.item[0];
+
+    return ACP_RETURN_SUCCESS;
 }
 
 int acp_getITS ( ITS *output, Peer *peer, int remote_channel_id ) {
@@ -1361,11 +1433,11 @@ void acp_sendPeerListInfo ( PeerList *list, ACPResponse *response, Peer *peer ) 
     ACP_SEND_STR ( "+-----------+---------------+-----------+-----------+----------------+\n" )
     FORLi {
         snprintf ( q, sizeof q, "|%11s|%15s|%11d|%11u|%16u|\n",
-                   LIi.id,
-                   LIi.addr_str,
-                   LIi.port,
-                   LIi.addr.sin_port,
-                   LIi.addr.sin_addr.s_addr
+        LIi.id,
+        LIi.addr_str,
+        LIi.port,
+        LIi.addr.sin_port,
+        LIi.addr.sin_addr.s_addr
                  );
         ACP_SEND_STR ( q )
     }

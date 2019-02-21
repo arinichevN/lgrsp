@@ -6,6 +6,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <sys/poll.h>
 
 #include "app.h"
 #include "cmd.h"
@@ -41,6 +42,12 @@
 #define ACP_DELIMITER_BLOCK  '\r'
 #define ACP_DELIMITER_BLOCK_STR "\r"
 #define ACP_DELIMITER_PACKET  '\0'
+
+
+#define ACP_RETURN_SUCCESS  1
+#define ACP_RETURN_FAILURE  0
+#define ACP_RETURN_WAIT_SEND  2
+#define ACP_RETURN_WAIT_RECIEVE  3
 
 //the same for request and response
 #define ACP_BLOCK_IND_CRC 3
@@ -300,6 +307,8 @@ extern int acp_getRChannelITS ( ITS *output, RChannel *rchannel );
 extern int acp_getRChannelFTS ( FTS *output, RChannel *rchannel );
 
 extern int acp_getFTS(FTS *output, Peer *peer, int remote_channel_id);
+
+extern int acp_getFTS_poll(FTS *output, Peer *peer, int remote_channel_id);
 
 extern int acp_getITS(ITS *output, Peer *peer, int remote_channel_id);
 

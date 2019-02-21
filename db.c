@@ -85,12 +85,6 @@ int getChannel_callback ( void *data, int argc, char **argv, char **azColName ) 
                 return EXIT_FAILURE;
             }
             c++;
-        } else if ( DB_COLUMN_IS ( "cycle_duration_sec" ) ) {
-            item->cycle_duration.tv_sec=DB_CVI;
-            c++;
-        } else if ( DB_COLUMN_IS ( "cycle_duration_nsec" ) ) {
-            item->cycle_duration.tv_nsec=DB_CVI;
-            c++;
         } else if ( DB_COLUMN_IS ( "enable" ) ) {
             enable = DB_CVI;
             c++;
@@ -104,7 +98,7 @@ int getChannel_callback ( void *data, int argc, char **argv, char **azColName ) 
             printde ( "unknown column (we will skip it): %s\n", DB_COLUMN_NAME );
         }
     }
-#define N 9
+#define N 7
     if ( c != N ) {
         printde ( "required %d columns but %d found\n", N, c );
         return EXIT_FAILURE;
@@ -166,7 +160,7 @@ int sendProgAll_callback ( void *data, int argc, char **argv, char **azColName )
     }
 #undef N
     char q[128];
-    snprintf ( q, sizeof q, "%d" CDS "%s" CDS "%d" CDS "%ld" CDS "%ld" CDS "%d" CDS "%d" RDS,
+    snprintf ( q, sizeof q, "%d" CDS "%s" CDS "%ld" CDS "%ld" CDS "%d" CDS "%d" RDS,
                item.id,
                kind,
                item.interval.tv_sec,
@@ -174,7 +168,8 @@ int sendProgAll_callback ( void *data, int argc, char **argv, char **azColName )
                item.max_rows,
                item.clear
              );
-    acp_responseSendStr ( q, ACP_MIDDLE_PACK, response, peer );
+   acp_responseSendStr ( q, ACP_MIDDLE_PACK, response, peer );
+   return EXIT_SUCCESS;
 }
 
 int sendChannelProgAll_callback ( void *data, int argc, char **argv, char **azColName ) {
@@ -212,6 +207,7 @@ int sendChannelProgAll_callback ( void *data, int argc, char **argv, char **azCo
                prog_id
              );
     acp_responseSendStr ( q, ACP_MIDDLE_PACK, response, peer );
+       return EXIT_SUCCESS;
 }
 
 int getChannelByIdFromDB ( Channel *item,int channel_id, sqlite3 *dbl, const char *db_path ) {
@@ -281,7 +277,7 @@ Channel * deleteChannel ( int id, ChannelLList *list, Mutex *list_mutex ) {
     return NULL;
 }
 
-int addChannelById ( int channel_id, ChannelLList *list, Mutex *list_mutex, sqlite3 *dbl, const char *db_path ) {
+int addChannelById ( int channel_id, ChannelLList *list, Mutex *list_mutex, __time_t timeout, sqlite3 *dbl, const char *db_path ) {
     {
         Channel *item;
         LLIST_GETBYID ( item,list,channel_id )
@@ -315,7 +311,7 @@ int addChannelById ( int channel_id, ChannelLList *list, Mutex *list_mutex, sqli
         free ( item );
         return 0;
     }
-    if ( !initClient ( &item->sock_fd, WAIT_RESP_TIMEOUT ) ) {
+    if ( !initClient ( &item->sock_fd, timeout ) ) {
         freeMutex ( &item->mutex );
         free ( item );
         return 0;
@@ -354,15 +350,17 @@ int loadActiveChannel_callback ( void *data, int argc, char **argv, char **azCol
         void *b;
         void *c;
         const void *d;
+        void *e;
     };
     struct ds *d=data;
     ChannelLList *list=d->a;
     Mutex *list_mutex=d->b;
     sqlite3 *db=d->c;
     const char *db_path=d->d;
+    __time_t timeout = *(__time_t *) d->e;
     DB_FOREACH_COLUMN {
         if ( DB_COLUMN_IS ( "id" ) ) {
-            addChannelById ( DB_CVI, list,  list_mutex, db, db_path );
+            addChannelById ( DB_CVI, list,  list_mutex, timeout, db, db_path );
         } else {
             printde ( "unknown column (we will skip it): %s\n", DB_COLUMN_NAME );
         }
@@ -370,7 +368,7 @@ int loadActiveChannel_callback ( void *data, int argc, char **argv, char **azCol
     return EXIT_SUCCESS;
 }
 
-int loadActiveChannel ( ChannelLList *list, Mutex *list_mutex, sqlite3 *dbl, const char *db_path ) {
+int loadActiveChannel ( ChannelLList *list, Mutex *list_mutex, __time_t timeout, sqlite3 *dbl, const char *db_path ) {
     int close=0;
     sqlite3 *db=db_openAlt ( dbl, db_path, &close );
     if ( db==NULL ) {
@@ -382,8 +380,9 @@ int loadActiveChannel ( ChannelLList *list, Mutex *list_mutex, sqlite3 *dbl, con
         void *b;
         void *c;
         const void *d;
+        void *e;
     };
-    struct ds data = {.a = list, .b = list_mutex, .c = db, .d = db_path};
+    struct ds data = {.a = list, .b = list_mutex, .c = db, .d = db_path, .e = &timeout};
     char *q = "select id from channel where load=1";
     if ( !db_exec ( db, q, loadActiveChannel_callback, &data ) ) {
         if ( close ) db_close ( db );

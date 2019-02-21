@@ -34,11 +34,14 @@
 #define LOG_KIND_FTS_STR "fts"
 #define STATUS_SUCCESS "SUCCESS"
 #define STATUS_FAILURE "FAILURE"
-#define sensorRead(item) acp_getFTS ( &(item)->input, &(item)->remote_channel.peer, (item)->remote_channel.channel_id )
+#define sensorRead(item) acp_getFTS_poll ( &(item)->input, &(item)->remote_channel.peer, (item)->remote_channel.channel_id )
 enum ProgState {
     OFF,
     INIT,
     RUN,
+    WAIT,
+    SAVE,
+    READ,
     LOG_KIND_FTS,
     UNDEFINED,
     DISABLE,

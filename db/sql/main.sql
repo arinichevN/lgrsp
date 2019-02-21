@@ -21,8 +21,6 @@ CREATE TABLE "channel" (
     "description" TEXT NOT NULL,
     "prog_id" INTEGER NOT NULL,
     "sensor_remote_channel_id" INTEGER NOT NULL,
-    "cycle_duration_sec" INTEGER NOT NULL,
-    "cycle_duration_nsec" INTEGER NOT NULL,
     "save" INTEGER NOT NULL,
     "enable" INTEGER NOT NULL,
     "load" INTEGER NOT NULL

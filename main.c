@@ -6,14 +6,13 @@ TSVresult config_tsv = TSVRESULT_INITIALIZER;
 char *db_prog_path;
 char *db_log_path;
 char *peer_id;
-int socket_timeout=0;
+__time_t socket_timeout=0;
 
 int sock_port = -1;
 int sock_fd = -1;
 PGconn *db_conn_log = NULL;
 
 Peer peer_client = {.fd = &sock_fd, .addr_size = sizeof peer_client.addr};
-struct timespec cycle_duration = {0, 0};
 Thread working_thread;
 Mutex db_mutex = MUTEX_INITIALIZER;
 
@@ -22,7 +21,7 @@ ChannelLList channel_list = LLIST_INITIALIZER;
 #include "util.c"
 #include "db.c"
 
-int readSettings ( TSVresult* r, const char *data_path, char **peer_id, char **db_prog_path, char **db_log_path, int * socket_timeout ) {
+int readSettings ( TSVresult* r, const char *data_path, char **peer_id, char **db_prog_path, char **db_log_path, __time_t * socket_timeout, struct timespec *cd ) {
     if ( !TSVinit ( r, data_path ) ) {
         return 0;
     }
@@ -30,6 +29,8 @@ int readSettings ( TSVresult* r, const char *data_path, char **peer_id, char **d
     char *_db_prog_path = TSVgetvalues ( r, 0, "db_prog_path" );
     char *_db_log_path = TSVgetvalues ( r, 0, "db_log_path" );
     int _socket_timeout = TSVgetis ( r, 0, "socket_timeout" );
+    int _cd_sec = TSVgetis ( r, 0, "cd_sec" );
+    int _cd_nsec = TSVgetis ( r, 0, "cd_nsec" );
     if ( TSVnullreturned ( r ) ) {
         return 0;
     }
@@ -37,11 +38,13 @@ int readSettings ( TSVresult* r, const char *data_path, char **peer_id, char **d
     *db_prog_path = _db_prog_path;
     *db_log_path = _db_log_path;
     *socket_timeout = _socket_timeout;
+    cd->tv_sec = _cd_sec;
+    cd->tv_nsec = _cd_nsec;
     return 1;
 }
 
 int initApp() {
-    if ( !readSettings ( &config_tsv, CONFIG_FILE, &peer_id, &db_prog_path, &db_log_path, &socket_timeout ) ) {
+    if ( !readSettings ( &config_tsv, CONFIG_FILE, &peer_id, &db_prog_path, &db_log_path, &socket_timeout,  &working_thread.cycle_duration ) ) {
         putsde ( "failed to read settings\n" );
         return 0;
     }
@@ -65,6 +68,10 @@ int initApp() {
         putsde ( "failed to initialize udp server\n" );
         return 0;
     }
+    if ( !dbp_open ( db_log_path, &working_thread.db_conn ) ) {
+        putsde ( "failed to connect to postgres\n" );
+        return 0;
+    }
     if ( !createMThread ( &working_thread.thread, &threadFunction, &working_thread ) ) {
         putsde ( "failed to start working thread\n" );
         return 0;
@@ -73,7 +80,7 @@ int initApp() {
 }
 
 int initData() {
-    if ( !loadActiveChannel ( &working_thread.channel_list, &working_thread.channel_list_mutex, NULL, db_prog_path ) ) {
+    if ( !loadActiveChannel ( &working_thread.channel_list, &working_thread.channel_list_mutex, socket_timeout, NULL, db_prog_path ) ) {
         freeChannelList ( &working_thread.channel_list );
         return 0;
     }
@@ -87,44 +94,44 @@ void serverRun ( int *state, int init_state ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
             Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
+            LLIST_GETBYID ( item, &working_thread.channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     progStop ( &item->prog );
                     unlockMutex ( &item->mutex );
                 }
-                deleteChannelById ( i1l.item[i], &channel_list, &channel_list_mutex,NULL, db_prog_path );
+                deleteChannelById ( i1l.item[i], &working_thread.channel_list, &working_thread.channel_list_mutex,NULL, db_prog_path );
             }
         }
         return;
     } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_START ) ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
-            addChannelById ( i1l.item[i], &channel_list, &channel_list_mutex, NULL, db_prog_path );
+            addChannelById ( i1l.item[i], &working_thread.channel_list, &working_thread.channel_list_mutex, socket_timeout, NULL, db_prog_path );
         }
         return;
     } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_RESET ) ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
             Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
+            LLIST_GETBYID ( item, &working_thread.channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     progStop ( &item->prog );
                     unlockMutex ( &item->mutex );
                 }
-                deleteChannelById ( i1l.item[i], &channel_list, &channel_list_mutex,NULL, db_prog_path );
+                deleteChannelById ( i1l.item[i], &working_thread.channel_list, &working_thread.channel_list_mutex,NULL, db_prog_path );
             }
         }
         FORLISTN ( i1l, i ) {
-            addChannelById ( i1l.item[i], &channel_list, &channel_list_mutex,NULL, db_prog_path );
+            addChannelById ( i1l.item[i], &working_thread.channel_list, &working_thread.channel_list_mutex, socket_timeout,NULL, db_prog_path );
         }
         return;
     } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_ENABLE ) ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
             Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
+            LLIST_GETBYID ( item, &working_thread.channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     progEnable ( &item->prog );
@@ -138,7 +145,7 @@ void serverRun ( int *state, int init_state ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
             Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
+            LLIST_GETBYID ( item, &working_thread.channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     progDisable ( &item->prog );
@@ -152,7 +159,7 @@ void serverRun ( int *state, int init_state ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
             Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
+            LLIST_GETBYID ( item, &working_thread.channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( !bufCatProgInfo ( item, &response ) ) {
                     return;
@@ -163,7 +170,7 @@ void serverRun ( int *state, int init_state ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
             Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
+            LLIST_GETBYID ( item, &working_thread.channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( !bufCatProgEnabled ( item, &response ) ) {
                     return;
@@ -174,20 +181,9 @@ void serverRun ( int *state, int init_state ) {
         SERVER_GET_I1LIST_FROM_REQUEST
         FORLISTN ( i1l, i ) {
             Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
+            LLIST_GETBYID ( item, &working_thread.channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( !bufCatFTS ( item, &response ) ) {
-                    return;
-                }
-            }
-        }
-    } else if ( ACP_CMD_IS ( ACP_CMD_GET_NEXT_ITEM ) ) {
-        SERVER_GET_I2LIST_FROM_REQUEST
-        FORLISTN ( i2l, i ) {
-            Channel *item;
-            LLIST_GETBYID ( item, &channel_list, i2l.item[i].p0 )
-            if ( item != NULL ) {
-                if ( !bufCatNext ( item,i2l.item[i].p1, &response ) ) {
                     return;
                 }
             }
@@ -222,17 +218,14 @@ void serverRun ( int *state, int init_state ) {
     acp_responseSend ( &response, &peer_client );
 }
 
-
-
 void cleanup_handler ( void *arg ) {
-    Channel *item = arg;
-    printf ( "cleaning up thread %d\n", item->prog.id );
+    puts ( "cleaning up working thread" );
 }
 
 void *threadFunction ( void *arg ) {
     Thread *item = arg;
-    printdo ( "thread for channel with id=%d has been started\n", item->id );
 #ifdef MODE_DEBUG
+    puts ( "thread for channels has been started" );
     pthread_cleanup_push ( cleanup_handler, item );
 #endif
     while ( 1 ) {
@@ -241,17 +234,17 @@ void *threadFunction ( void *arg ) {
         if ( threadCancelDisable ( &old_state ) ) {
             if ( lockMutex ( &item->channel_list_mutex ) ) {
                 FOREACH_LLIST ( channel, &item->channel_list, Channel ) {
-                    if(lockMutex(&channel->mutex)){
-                    progControl ( &channel->prog, &channel->sensor, &item->db_conn );
+                    if ( lockMutex ( &channel->mutex ) ) {
+                        progControl ( &channel->prog, &channel->sensor, item->db_conn );
 #ifdef MODE_DEBUG
-                    struct timespec tm_rest = tonTimeRest ( &channel->prog.tmr );
-                    char *state = getStateStr ( channel->prog.state );
-                    printf ( "channel_id=%d state=%s time_rest=%ld sec\n", channel->id, state, tm_rest.tv_sec );
+                        struct timespec tm_rest = tonTimeRest ( &channel->prog.tmr );
+                        char *state = getStateStr ( channel->prog.state );
+                        printf ( "channel_id=%d state=%s time_rest=%ld sec\n", channel->id, state, tm_rest.tv_sec );
 #endif
-                    unlockMutex(&channel->mutex);
+                        unlockMutex ( &channel->mutex );
                     }
                 }
-                unlockMutex ( &item->mutex );
+                unlockMutex ( &item->channel_list_mutex );
             }
             threadSetCancelState ( old_state );
         }
@@ -263,14 +256,15 @@ void *threadFunction ( void *arg ) {
 }
 
 void freeData() {
-    freeChannelList ( &working_thread.channel_list, &working_thread.channel_list_mutex );
+    freeChannelList ( &working_thread.channel_list );
 }
 
 void freeApp() {
-    STOP_THREAD(working_thread.thread);
+    STOP_THREAD ( working_thread.thread );
+    PQfinish(working_thread.db_conn);
     freeData();
     freeSocketFd ( &sock_fd );
-    freeMutex ( &channel_list_mutex );
+    freeMutex ( &working_thread.channel_list_mutex );
     TSVclear ( &config_tsv );
 }
 

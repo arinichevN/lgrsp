@@ -47,6 +47,12 @@ char * getStateStr ( int state ) {
         return "INIT";
     case RUN:
         return "RUN";
+    case WAIT:
+        return "WAIT";
+    case READ:
+        return "READ";
+    case SAVE:
+        return "SAVE";
     case LOG_KIND_FTS:
         return LOG_KIND_FTS_STR;
     case DISABLE:
@@ -59,24 +65,35 @@ char * getStateStr ( int state ) {
     return "\0";
 }
 
-int pp_saveFTS(FTS item, Prog *prog, PGconn *db_conn) {
-    if (prog->max_rows <= 0) {
-        return 0;
-    }
-    if(item.state !== 1){
-     return 0;   
-    }
+int pp_clearFTS ( int id, PGconn *db_conn ) {
     char q[LINE_SIZE];
-    struct timespec now = getCurrentTime();
-    snprintf(q, sizeof q, "select log.do_real(%d,%f,%u,%ld)", prog->id, item.value, prog->max_rows, item.tm.tv_sec);
-    PGresult *r=dbp_exec(db_conn, q);
-    if (r==NULL) {
+    snprintf ( q, sizeof q, "delete from log.v_real where id = %d", id );
+    if ( !dbp_cmd ( db_conn, q ) ) {
 #ifdef MODE_DEBUG
-        fprintf(stderr, "%s(): log function failed\n", F);
+        fprintf ( stderr, "%s(): log function failed\n", F );
 #endif
         return 0;
     }
-     PQclear(r);
+    return 1;
+}
+
+int pp_saveFTS ( FTS *item, Prog *prog, PGconn *db_conn ) {
+    if ( prog->max_rows <= 0 ) {
+        return 0;
+    }
+    if ( item->state != 1 ) {
+        return 0;
+    }
+    char q[LINE_SIZE];
+    snprintf ( q, sizeof q, "select log.do_real(%d,%f,%u,%ld)", prog->id, item->value, prog->max_rows, item->tm.tv_sec );
+    PGresult *r;
+    if ( !dbp_exec ( &r, db_conn, q ) ) {
+#ifdef MODE_DEBUG
+        fprintf ( stderr, "%s(): log function failed\n", F );
+#endif
+        return 0;
+    }
+    PQclear ( r );
     return 1;
 }
 
@@ -97,23 +114,31 @@ void progControl ( Prog *item, Sensor *sensor, PGconn *db_conn ) {
         tonReset ( &item->tmr );
         if ( item->clear ) {
             if ( item->kind == LOG_KIND_FTS ) {
-                clearFTS ( db_conn );
+                pp_clearFTS ( sensor->input.id, db_conn );
             } else {
                 putsde ( "unknown kind\n" );
             }
         }
-        item->state = RUN;
+        item->state = WAIT;
         break;
-    case RUN:
+    case WAIT:
         if ( ton ( &item->tmr ) ) {
-            if ( item->kind == LOG_KIND_FTS ) {
-                if ( sensorRead ( sensor ) ) {
-                    saveFTS ( &sensor->input, db_conn );
-                }
-            } else {
-                putsde ( "unknown kind\n" );
-            }
+            item->state = READ;
         }
+        break;
+    case READ:
+        switch ( sensorRead ( sensor ) ) {
+        case ACP_RETURN_SUCCESS:
+            item->state = SAVE;puts("success");
+            break;
+        case ACP_RETURN_FAILURE:
+            item->state = WAIT;puts("failure");
+            break;
+        }
+        break;
+    case SAVE:
+        pp_saveFTS ( &sensor->input, item, db_conn );
+        item->state = WAIT;
         break;
     case DISABLE:
         item->state = OFF;
@@ -175,42 +200,11 @@ int bufCatProgEnabled ( Channel *item, ACPResponse *response ) {
 }
 
 int bufCatFTS ( Channel *item, ACPResponse *response ) {
-    FTS result= {.id=item->id, .tm.tv_sec=0, .tm.tv_nsec=0, .value=0.0, .state=0};
-    RecordFTSList *list = &item->log.list;
-    int i = item->log.last_ind - 1;
-    if ( list->max_length > 0 && i >= 0) {
-        if ( lockMutex ( &item->mutex ) ) {
-            if ( lockMutex ( &item->log.mutex ) ) {
-                result.value = list->item[i].value;
-                result.tm = list->item[i].tm;
-                result.state = list->item[i].state;
-                unlockMutex ( &item->log.mutex );
-            }
-            unlockMutex ( &item->mutex );
-        }
-    }
-    return acp_responseFTSCat ( result.id, result.value, result.tm, result.state, response );
-}
-
-int bufCatNext ( Channel *item, int max_mark_sec, ACPResponse *response ) {
-    FTS result= {.id=item->id, .tm.tv_sec=LONG_MAX, .tm.tv_nsec=0, .value=0.0, .state=0};
-    RecordFTSList *list = &item->log.list;
-    int done=0;
+    FTS result = {.id=-1, .tm.tv_sec=0, .tm.tv_nsec=0, .value=0.0, .state=0};
     if ( lockMutex ( &item->mutex ) ) {
-        if ( lockMutex ( &item->log.mutex ) ) {
-            FORMLi {
-                if ( LIi.tm.tv_sec > max_mark_sec && LIi.tm.tv_sec < result.tm.tv_sec ) {
-                    result.value=LIi.value;
-                    result.tm=LIi.tm;
-                    result.state=LIi.state;
-                    done=1;
-                }
-            }
-            unlockMutex ( &item->log.mutex );
-        }
+        result = item->sensor.input;
         unlockMutex ( &item->mutex );
     }
-    if ( !done ) result.tm.tv_sec=0;
     return acp_responseFTSCat ( result.id, result.value, result.tm, result.state, response );
 }
 
@@ -220,29 +214,31 @@ void printData ( ACPResponse *response ) {
     SEND_STR ( q )
     snprintf ( q, sizeof q, "port: %d\n", sock_port );
     SEND_STR ( q )
+    snprintf ( q, sizeof q, "working_thread.cycle_duration: %ld s, %ld ns\n", working_thread.cycle_duration.tv_sec, working_thread.cycle_duration.tv_nsec );
+    SEND_STR ( q )
     snprintf ( q, sizeof q, "db_prog_path: %s\n", db_prog_path );
+    SEND_STR ( q )
+    snprintf ( q, sizeof q, "db_log_path: %s\n", db_log_path );
     SEND_STR ( q )
     snprintf ( q, sizeof q, "app_state: %s\n", getAppState ( app_state ) );
     SEND_STR ( q )
     snprintf ( q, sizeof q, "PID: %d\n", getpid() );
     SEND_STR ( q )
 
-    SEND_STR ( "+-----------------------------------------------------------+\n" )
-    SEND_STR ( "|                          Channel                          |\n" )
-    SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+\n" )
-    SEND_STR ( "|     id    |  prog_id  |  cd_sec   |  cd_nsec  |   save    |\n" )
-    SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+\n" )
-    FOREACH_CHANNEL {
-        snprintf ( q, sizeof q, "|%11d|%11d|%11ld|%11ld|%11d|\n",
-        item->id,
-        item->prog.id,
-        item->cycle_duration.tv_sec,
-        item->cycle_duration.tv_nsec,
-        item->save
+    SEND_STR ( "+-----------------------------------+\n" )
+    SEND_STR ( "|              Channel              |\n" )
+    SEND_STR ( "+-----------+-----------+-----------+\n" )
+    SEND_STR ( "|     id    |  prog_id  |   save    |\n" )
+    SEND_STR ( "+-----------+-----------+-----------+\n" )
+    FOREACH_LLIST ( item, &working_thread.channel_list, Channel ) {
+        snprintf ( q, sizeof q, "|%11d|%11d|%11d|\n",
+                   item->id,
+                   item->prog.id,
+                   item->save
                  );
         SEND_STR ( q )
     }
-    SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+\n" )
+    SEND_STR ( "+-----------++-----------+-----------+\n" )
 
     SEND_STR ( "+-----------------------------------------------------------------------------------------------+\n" )
     SEND_STR ( "|                                          Channel                                              |\n" )
@@ -251,58 +247,20 @@ void printData ( ACPResponse *response ) {
     SEND_STR ( "|           +-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n" )
     SEND_STR ( "|    id     |    id     |  peer_id  | remote_id |   value   |    sec    |    nsec   |   state   |\n" )
     SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n" )
-    FOREACH_CHANNEL {
+    FOREACH_LLIST ( item, &working_thread.channel_list, Channel ) {
         snprintf ( q, sizeof q, "|%11d|%11d|%11s|%11d|%11.3f|%11ld|%11ld|%11d|\n",
-        item->id,
-        item->sensor.remote_channel.id,
-        item->sensor.remote_channel.peer.id,
-        item->sensor.remote_channel.channel_id,
-        item->sensor.input.value,
-        item->sensor.input.tm.tv_sec,
-        item->sensor.input.tm.tv_nsec,
-        item->sensor.input.state
+                   item->id,
+                   item->sensor.remote_channel.id,
+                   item->sensor.remote_channel.peer.id,
+                   item->sensor.remote_channel.channel_id,
+                   item->sensor.input.value,
+                   item->sensor.input.tm.tv_sec,
+                   item->sensor.input.tm.tv_nsec,
+                   item->sensor.input.state
                  );
         SEND_STR ( q )
     }
     SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n" )
-
-    SEND_STR ( "+-----------------------------------+\n" )
-    SEND_STR ( "|              Channel              |\n" )
-    SEND_STR ( "+-----------+-----------------------+\n" )
-    SEND_STR ( "|           |         LogFTS        |\n" )
-    SEND_STR ( "|           +-----------+-----------+\n" )
-    SEND_STR ( "|    id     | max_length| last_ind  |\n" )
-    SEND_STR ( "+-----------+-----------+-----------+\n" )
-    FOREACH_CHANNEL {
-        snprintf ( q, sizeof q, "|%11d|%11d|%11d|\n",
-        item->id,
-        item->log.list.max_length,
-        item->log.last_ind
-                 );
-        SEND_STR ( q )
-    }
-    SEND_STR ( "+-----------+-----------+-----------+\n" )
-
-    SEND_STR ( "+-----------------------------------------------------------+\n" )
-    SEND_STR ( "|                         Channel                           |\n" )
-    SEND_STR ( "+-----------+-----------------------------------------------+\n" )
-    SEND_STR ( "|           |                 Record list                   |\n" )
-    SEND_STR ( "|           +-----------+-----------+-----------+-----------+\n" )
-    SEND_STR ( "|    id     |   value   |    sec    |    nsec   |   state   |\n" )
-    SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+\n" )
-    FOREACH_CHANNEL {
-        FORLISTMN ( item->log.list, i ) {
-            snprintf ( q, sizeof q, "|%11d|%11f|%11ld|%11ld|%11d|\n",
-            item->id,
-            item->log.list.item[i].value,
-            item->log.list.item[i].tm.tv_sec,
-            item->log.list.item[i].tm.tv_nsec,
-            item->log.list.item[i].state
-                     );
-            SEND_STR ( q )
-        }
-    }
-    SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+\n" )
 
     SEND_STR ( "+-----------------------------------------------------------------------------------------------------------------------+\n" )
     SEND_STR ( "|                                                       Channel                                                         |\n" )
@@ -311,21 +269,21 @@ void printData ( ACPResponse *response ) {
     SEND_STR ( "|           +-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n" )
     SEND_STR ( "|    id     |    id     |interval_s |interval_ns|  max_rows |   clear   |   kind    |   state   |  trest_s  |  trest_ns |\n" )
     SEND_STR ( "+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n" )
-    FOREACH_CHANNEL {
+    FOREACH_LLIST ( item, &working_thread.channel_list, Channel ) {
         char *state=getStateStr ( item->prog.state );
         char *kind=getStateStr ( item->prog.kind );
         struct timespec tm_rest=tonTimeRest ( &item->prog.tmr );
         snprintf ( q, sizeof q, "|%11d|%11d|%11ld|%11ld|%11d|%11d|%11s|%11s|%11ld|%11ld|\n",
-        item->id,
-        item->prog.id,
-        item->prog.interval.tv_sec,
-        item->prog.interval.tv_nsec,
-        item->prog.max_rows,
-        item->prog.clear,
-        kind,
-        state,
-        tm_rest.tv_sec,
-        tm_rest.tv_nsec
+                   item->id,
+                   item->prog.id,
+                   item->prog.interval.tv_sec,
+                   item->prog.interval.tv_nsec,
+                   item->prog.max_rows,
+                   item->prog.clear,
+                   kind,
+                   state,
+                   tm_rest.tv_sec,
+                   tm_rest.tv_nsec
                  );
         SEND_STR ( q )
     }
@@ -364,8 +322,6 @@ void printHelp ( ACPResponse *response ) {
     snprintf ( q, sizeof q, "%s\tget channel state (1-enabled, 0-disabled); channel id expected\n", ACP_CMD_CHANNEL_GET_ENABLED );
     SEND_STR ( q )
     snprintf ( q, sizeof q, "%s\tget channel info; channel id expected\n", ACP_CMD_CHANNEL_GET_INFO );
-    SEND_STR ( q )
-    snprintf ( q, sizeof q, "%s\tget next record from channel log; channel id and max_mark_sec expected\n", ACP_CMD_GET_NEXT_ITEM );
     SEND_STR ( q )
     snprintf ( q, sizeof q, "%s\tget channel last saved value; channel id expected\n", ACP_CMD_GET_FTS );
     SEND_STR_L ( q )

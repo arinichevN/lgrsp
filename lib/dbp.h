@@ -22,19 +22,13 @@ extern int dbp_open(const char *conninfo,PGconn **conn);
 
 extern int dbp_wait(const char *conninfo);
 
-extern int dbp_getConnAlt(PGconn **conn_out, int *close, const PGconn * conn, const char * conninfo );
-
-
+extern int dbp_getConnAlt(PGconn **conn_out, int *close, PGconn * conn, const char * conninfo );
 
 extern int dbp_cmd(PGconn *conn, char *q);
 
 extern int dbp_exec(PGresult **r , PGconn *conn, const char *q);
 
 extern int dbp_getInt(int *item, PGconn *conn, char *q);
-
-extern int dbp_conninfoParse(const char *buf, char *host, int *port, char *dbname, char *user, size_t str_size);
-
-extern int dbp_conninfoEq(char *c1, char *c2);
 
 extern int dbp_saveTableFieldInt(const char * table, const char *field, int id, int value, const char * schema,  PGconn *conn, const char* conninfo);
 
